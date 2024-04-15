@@ -1,0 +1,107 @@
+  name: Application Code Deployment
+
+  on:
+    workflow_call: 
+      inputs:
+        appVersionSuffix:
+          description: 'App version suffix'
+          required: true
+          type: string
+      secrets:
+        AWS_ACCESS_KEY_ID:
+          description: 'AWS Access Key ID'
+          required: true
+        AWS_SECRET_ACCESS_KEY:
+          description: 'AWS Secret Access Key'
+          required: true
+        AWS_DEFAULT_REGION:
+          description: 'AWS Default Region'
+          required: true
+    workflow_dispatch:
+      inputs:
+        appVersionSuffix:
+          description: "Suffix to redeploy the version of the application, because it is unique"
+          default: ""
+
+  env:
+    REPOSITORY_NAME: itrendcl-dataverse
+
+  jobs:
+    dataverse-code-deployment:
+      name: Build and publish docker images
+      runs-on: ubuntu-latest
+      steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_DEFAULT_REGION }}
+
+      - name: Get dataverse/image_tag from ssm
+        run: |
+          aws --region us-east-1 ssm get-parameter --name /${{ env.REPOSITORY_NAME }}/${GITHUB_REF_NAME}/dataverse/image_tag --with-decryption > dataverse_image_tag
+
+      - name: Extract tag value
+        uses: sergeysova/jq-action@v2
+        id: extract-tag
+        with:
+          cmd: "cat dataverse_image_tag | jq .Parameter.Value"
+          multiline: true
+
+      - name: Get docker-compose template from ssm
+        run: | 
+          aws --region us-east-1 ssm get-parameter --name /${{ env.REPOSITORY_NAME }}/${GITHUB_REF_NAME}/dockercompose_template --with-decryption > dockercompose_template
+          tag=$(echo -e ${{ steps.extract-tag.outputs.value }})
+          echo "The tag is $tag"
+          sed -i "s/\$IMAGE_TAG/$tag/g" dockercompose_template
+          cat dockercompose_template
+
+      - name: Extract docker-compose template value
+        uses: sergeysova/jq-action@v2
+        id: extract-docker-compose-template
+        with:
+          cmd: "cat dockercompose_template | jq .Parameter.Value"
+          multiline: true
+
+      - name: Build docker-compose.yml file
+        run: |
+          echo -e ${{ steps.extract-docker-compose-template.outputs.value }}
+          echo -e ${{ steps.extract-docker-compose-template.outputs.value }} > docker-compose-template.yml
+          envsubst < docker-compose-template.yml > docker-compose.yml
+          cat docker-compose.yml
+
+      - name: Zip app
+        run: |
+          cp -r eb-config/.platform .
+          cp -r eb-config/.ebextensions .
+          zip -r deploy_package.zip .ebextensions .platform docker-compose.yml
+
+      - name: Upload deploy_package.zip as artifact
+        uses: actions/upload-artifact@v2
+        with:
+          name: deploy_package
+          path: deploy_package.zip
+
+      - name: Set env for deploy app
+        run: |
+          echo "S3_BUCKET_DOCKERCOMPOSE=${{ env.REPOSITORY_NAME }}-${GITHUB_REF_NAME}-eb-app-docker-compose" >> $GITHUB_ENV
+          echo "EB_APP_NAME=${{ env.REPOSITORY_NAME }}-${GITHUB_REF_NAME}-application" >> $GITHUB_ENV
+          echo "EB_ENV_NAME=${{ env.REPOSITORY_NAME }}-${GITHUB_REF_NAME}-environment" >> $GITHUB_ENV
+
+      - name: Upload docker-compose to S3
+        run: aws s3 cp deploy_package.zip s3://${S3_BUCKET_DOCKERCOMPOSE}
+
+      - name: Create elastic beanstalk application version
+        run: |
+          aws elasticbeanstalk create-application-version \
+          --application-name ${EB_APP_NAME} \
+          --source-bundle S3Bucket="${S3_BUCKET_DOCKERCOMPOSE}",S3Key="deploy_package.zip" \
+          --version-label "${GITHUB_SHA}${{ github.event.inputs.appVersionSuffix }}" \
+          --description "Built from ${IMAGE_TAG}"
+
+      - name: Update elastic beanstalk environment
+        run: aws elasticbeanstalk update-environment --environment-name ${EB_ENV_NAME} --version-label "${GITHUB_SHA}${{ github.event.inputs.appVersionSuffix }}"

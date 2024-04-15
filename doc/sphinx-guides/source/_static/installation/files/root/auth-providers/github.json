@@ -1,8 +1,0 @@
-{
-    "id":"github",
-    "factoryAlias":"oauth2",
-    "title":"GitHub",
-    "subtitle":"",
-    "factoryData":"type: github | userEndpoint: NONE | clientId: FIXME | clientSecret: FIXME",
-    "enabled":true
-}

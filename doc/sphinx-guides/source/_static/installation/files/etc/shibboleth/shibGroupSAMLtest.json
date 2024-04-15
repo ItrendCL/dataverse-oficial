@@ -1,5 +1,0 @@
-{
-  "name": "All samltest.id Shibboleth Users",
-  "attribute": "Shib-Identity-Provider",
-  "pattern": "https://samltest.id/saml/idp"
-}

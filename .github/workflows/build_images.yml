@@ -1,0 +1,205 @@
+name: App Container Image
+
+on:
+  push:
+    branches:
+      - dev
+      - test
+      - main
+    paths: 
+      - 'modules/**'
+      - 'src/**'
+      - '.github/workflows/**'
+
+env:
+  REPOSITORY_NAME: itrendcl-dataverse
+  PLATFORMS: linux/amd64,linux/arm64
+
+jobs:
+  paths-filter:
+    name: Valid if base image is updated
+    runs-on: ubuntu-latest
+    outputs:
+      output1: ${{ steps.filter.outputs.base }}
+    steps:
+    - uses: actions/checkout@v2
+    - uses: dorny/paths-filter@v2
+      id: filter
+      with:
+        base: ${{ github.ref }}
+        filters: |
+          base:
+            - 'modules/container-base/**'
+            - 'modules/container-parent/**'
+    - name: Debug
+      run: |
+        echo "DEBUG: ${{ steps.filter.outputs.base }}"
+        echo "${{ steps.filter.outputs.base }}" > output.txt
+    - name: Upload output
+      uses: actions/upload-artifact@v2
+      with:
+        name: output
+        path: output.txt
+
+  build-base:
+    needs: paths-filter
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Download output
+      uses: actions/download-artifact@v2
+      with:
+        name: output
+        path: .
+
+    - name: Read output
+      id: read-output
+      run: echo "::set-output name=deploy::$(cat output.txt)"
+
+    - name: Debug deploy
+      run: echo "${{ steps.read-output.outputs.deploy }}"
+      
+    - name: Set up JDK 17
+      if: ${{ steps.read-output.outputs.deploy == 'true' }}
+      uses: actions/setup-java@v3
+      with:
+          java-version: '17'
+          distribution: 'adopt'
+
+    - name: Cache Maven packages
+      if: ${{ steps.read-output.outputs.deploy == 'true' }}
+      uses: actions/cache@v3
+      with:
+          path: ~/.m2
+          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-m2
+
+    - name: Configure AWS credentials
+      if: ${{ steps.read-output.outputs.deploy == 'true' }}
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+        aws-access-key-id: ${{secrets.AWS_ACCESS_KEY_ID}}
+        aws-secret-access-key: ${{secrets.AWS_SECRET_ACCESS_KEY}}
+        aws-region: ${{secrets.AWS_DEFAULT_REGION}}
+
+    - name: Login to AWS ECR
+      if: ${{ steps.read-output.outputs.deploy == 'true' }}
+      uses: aws-actions/amazon-ecr-login@v1
+      id: login-ecr
+
+    - name: Set env IMAGE_TAG
+      if: ${{ steps.read-output.outputs.deploy == 'true' }}
+      run: |
+        echo "IMAGE_TAG=${GITHUB_REF_NAME}-${GITHUB_SHA::8}" >> $GITHUB_ENV
+
+    - name: Crete ECR_REGISTRY env
+      if: ${{ steps.read-output.outputs.deploy == 'true' }}
+      run: |
+        echo "ECR_REGISTRY=${{ steps.login-ecr.outputs.registry }}" >> $GITHUB_ENV
+
+    - name: Create base container image
+      if: ${{ steps.read-output.outputs.deploy == 'true' }}
+      run: |
+        mvn -f modules/container-base -Pct deploy -Dbase.image.tag=${{ env.IMAGE_TAG }} -Ddocker.platforms=${{ env.PLATFORMS }} -Ddocker.registry=${{ env.ECR_REGISTRY }}
+
+    - name: Put IMAGE_TAG value in ssm
+      if: ${{ steps.read-output.outputs.deploy == 'true' }}
+      run: aws --region us-east-1 ssm put-parameter --name /${{ env.REPOSITORY_NAME }}/${GITHUB_REF_NAME}/base/image_tag --value ${IMAGE_TAG} --type "String" --overwrite
+
+
+  build:
+    name: Build image
+    runs-on: ubuntu-latest
+    needs: 
+      - paths-filter
+      - build-base
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+            java-version: '17'
+            distribution: 'adopt'
+
+      - name: Cache Maven packages
+        uses: actions/cache@v3
+        with:
+            path: ~/.m2
+            key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+            restore-keys: ${{ runner.os }}-m2
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_DEFAULT_REGION }}
+
+      - name: Login to AWS ECR
+        uses: aws-actions/amazon-ecr-login@v1
+        id: login-ecr
+
+      - name: Set env IMAGE_TAG
+        run: |
+          echo "IMAGE_TAG=${GITHUB_REF_NAME}-${GITHUB_SHA::8}" >> $GITHUB_ENV
+
+      - name: Crete ECR_REGISTRY env
+        run: |
+          echo "ECR_REGISTRY=${{ steps.login-ecr.outputs.registry }}" >> $GITHUB_ENV
+
+      - name: Retrieve parameter from SSM
+        id: ssm_parameter
+        run: aws --region us-east-1 ssm get-parameter --name /${{ env.REPOSITORY_NAME }}/${GITHUB_REF_NAME}/base/image_tag | jq .Parameter.Value | xargs -I X echo "BASE_IMAGE_TAG=X" >> $GITHUB_ENV
+
+      - name: Check if image exists in ECR
+        id: check-image
+        run: |
+          aws ecr describe-images --repository-name ${REPOSITORY_NAME} --image-ids imageTag=${BASE_IMAGE_TAG} || echo "::set-output name=image_exists::false"
+
+      - name: Pull image from ECR
+        if: steps.check-image.outputs.image_exists == 'false'
+        run: |
+          echo "Pulling image: ${ECR_REGISTRY}/${REPOSITORY_NAME}:${BASE_IMAGE_TAG}"
+          docker pull ${ECR_REGISTRY}/${REPOSITORY_NAME}/base:${BASE_IMAGE_TAG}
+
+      - name: Throw error if image not found
+        if: steps.check-image.outputs.image_exists != 'false'
+        run: |
+          echo "Image not found in ECR"
+          exit 1
+
+      # - name: Build dataverse container image with local architecture
+      #   env:
+      #     ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+      #   run: mvn -Dapp.image.tag=${{env.IMAGE_TAG}} -Dbase.image.tag=${{env.BASE_IMAGE_TAG}} -Ddocker.registry=${{ env.ECR_REGISTRY }} -Pct package
+
+
+      - if: ${{ github.event_name != 'pull_request' }}
+        name: Set up QEMU for multi-arch builds
+        uses: docker/setup-qemu-action@v2
+
+      - if: ${{ github.event_name != 'pull_request' }}
+        name: Deploy multi-arch container image to ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: mvn -Dapp.image.tag=${{env.IMAGE_TAG}} -Dbase.image.tag=${{env.BASE_IMAGE_TAG}} -Ddocker.registry=${{ env.ECR_REGISTRY }} -Pct deploy
+
+      - name: Put IMAGE_TAG value in ssm
+        run: aws --region us-east-1 ssm put-parameter --name /${{ env.REPOSITORY_NAME }}/${GITHUB_REF_NAME}/dataverse/image_tag --value ${IMAGE_TAG} --type "String" --overwrite
+
+  deploy:
+    uses: ./.github/workflows/deploy-app.yml
+    needs: build
+    with:
+      appVersionSuffix: ${GITHUB_SHA::8}
+    secrets:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+      

@@ -1,8 +1,0 @@
-{
-    "id":"microsoft",
-    "factoryAlias":"oauth2",
-    "title":"Microsoft",
-    "subtitle":"",
-    "factoryData":"type: microsoft | userEndpoint: NONE | clientId: FIXME | clientSecret: FIXME",
-    "enabled":true
-}
