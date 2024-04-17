@@ -55,7 +55,7 @@ services:
       - TIMEOUT=3m
     command:
       - bootstrap.sh
-      - dev
+      - base
       #- demo
     #volumes:
     #  - ./demo:/scripts/bootstrap/demo

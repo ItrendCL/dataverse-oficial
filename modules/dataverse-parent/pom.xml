@@ -452,7 +452,7 @@
     
     <profiles>
         <profile>
-            <id>ct</id>
+            <id>itrend</id>
             <properties>
                 <!--
                     With moving to Payara 6, we are aligned with containers and classic install again.

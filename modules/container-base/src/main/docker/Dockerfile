@@ -90,6 +90,13 @@ RUN <<EOF
 
 EOF
 
+# Install AWS CLI
+RUN <<EOF
+    apt-get update -q
+    apt-get install awscli zip -y
+    rm -rf "/var/lib/apt/lists/*"
+EOF
+
 ARG JATTACH_VERSION="v2.1"
 ARG JATTACH_CHECKSUM="07885fdc782e02e7302c6d190f54c3930afa10a38140365adf54076ec1086a8e"
 ARG WAIT_FOR_VERSION="v2.2.3"

@@ -943,7 +943,7 @@
         </profile>
         <!-- TODO: Add a profile to run API tests (integration tests that end in IT.java. See conf/docker-aio/run-test-suite.sh -->
         <profile>
-            <id>ct</id>
+            <id>itrend</id>
             <properties>
                 <!-- Let's go FAST here - building the image should be quick to do by default. -->
                 <skipUnitTests>true</skipUnitTests>
@@ -951,19 +951,24 @@
                 <!-- Once we truly run tests with Testcontainers, this should be switch to "docker", activating ITs -->
                 <packaging.type>docker-build</packaging.type>
                 <postgresql.server.version>16</postgresql.server.version>
-            
-                <app.image>gdcc/dataverse:${app.image.tag}</app.image>
-                <app.image.tag>unstable</app.image.tag>
+
+                <app.registry.name>itrendcl-dataverse</app.registry.name>
+                <app.image>${app.registry.name}/dataverse:${app.image.tag}</app.image>
+                <app.image.tag>${revision}</app.image.tag>
                 <app.skipDeploy>false</app.skipDeploy>
-                <base.image>gdcc/base:${base.image.tag}</base.image>
-                <base.image.tag>unstable</base.image.tag>
-                <conf.image>gdcc/configbaker:${conf.image.tag}</conf.image>
+
+                <base.image>${app.registry.name}/base:${base.image.tag}</base.image>
+                <base.image.tag>${revision}</base.image.tag>
+
+                <conf.image>${app.registry.name}/configbaker:${conf.image.tag}</conf.image>
                 <conf.image.tag>${app.image.tag}</conf.image.tag>
     
                 <docker.platforms></docker.platforms>
             
                 <!-- Variables as used in docker-compose.yml -->
                 <APP_IMAGE>${app.image}</APP_IMAGE>
+                <APP_PROVIDER>${app.registry.name}</APP_PROVIDER>
+                <APP_VERSION>${app.image.tag}</APP_VERSION>
                 <POSTGRES_VERSION>${postgresql.server.version}</POSTGRES_VERSION>
                 <SOLR_VERSION>${solr.version}</SOLR_VERSION>
                 <DATAVERSE_DB_USER>dataverse</DATAVERSE_DB_USER>
